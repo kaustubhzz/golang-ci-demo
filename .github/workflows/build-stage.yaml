@@ -1,5 +1,5 @@
-name: CI Pipeline — Build, Lint & Test
-
+name: Deploy Docker image
+#Adding docker
 on:
   push:
     branches: [ main, develop ]
@@ -8,45 +8,10 @@ on:
 
 jobs:
   build:
-    name: Build Go Application
     runs-on: ubuntu-latest
-    
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-      
-    - name: Set up Go
-      uses: actions/setup-go@v4
-      with:
-        go-version: '1.24'
-        
-    - name: Cache Go modules
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
-          
-    - name: Download dependencies
-      run: go mod download
-      
-    - name: Build binary
-      run: go build -v -o ./bin/app ./cmd/
-      
-    - name: Upload binary artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: go-binary
-        path: ./bin/app
 
-  lint:
-    name: Lint with golangci-lint
-    runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Go
@@ -54,105 +19,76 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+      - name: Cache Go modules
+        uses: actions/cache@v3
         with:
-          version: latest
-          args: --timeout=5m
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
 
-  test:
-    name: Run Tests & Coverage
-    runs-on: ubuntu-latest
-    needs: lint
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
-        with:
-          go-version: '1.24'
-
-      - name: Install dependencies
+      - name: Download dependencies
         run: go mod download
 
-      - name: Run test with coverage
-        run: |
-          go test ./... -v -coverprofile=coverage.out -covermode=atomic
-          if [ -f coverage.out ]; then go tool cover -func=coverage.out | tail -n 1; fi
-
-      - name: Upload coverage artifact
-        uses: actions/upload-artifact@v4
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
         with:
-          name: test-coverage
-          path: coverage.out
+          version: latest
 
-      - name: Upload to Codecov
+      - name: Run Tests with Coverage
+        run: |
+          go test ./... -v -covermode=atomic -coverprofile=coverage.out
+          go tool cover -func=coverage.out
+
+      - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage.out
           fail_ci_if_error: true
-          token: ${{ secrets.CODECOV_TOKEN }} # remove if repo is public
 
-# Run only when code is pushed to main (i.e. after a merge)
-  govuln:
-    name: Govulncheck (dependency vulnerability scanner)
-    runs-on: ubuntu-latest
-    continue-on-error: true
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Install and Run GoSec
+        run: |
+          echo "Installing GoSec..."
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          echo "Running GoSec..."
+          $HOME/go/bin/gosec ./... || true
+        continue-on-error: true
 
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Install and Run Govulncheck
+        run: |
+          echo "Installing Govulncheck..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "Running Govulncheck..."
+          $HOME/go/bin/govulncheck ./... || true
+        continue-on-error: true
+
+      - name: Build Go binary
+        run: |
+          mkdir -p ./bin
+          go build -v -o ./bin/app ./cmd/
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
         with:
-          go-version: '1.24'
+          name: go-binary
+          path: ./bin/app
 
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - name: Run govulncheck
-        run: $HOME/go/bin/govulncheck ./...
-
-  security_gosec:
-    name: Gosec (Static Code Security) - main only
-    runs-on: ubuntu-latest
-    needs: test
-    # run only when code is pushed to main (not on PRs)
-    if: github.ref == 'refs/heads/main'
-    continue-on-error: true
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
         with:
-          go-version: '1.24'
+          registry: ghcr.io
+          username: kaustubhzz
+          password: ${{ secrets.GHCR_PAT }}
 
-      - name: Install gosec
-        run: go install github.com/securego/gosec/v2/cmd/gosec@latest
-
-      - name: Run gosec
-        run: $HOME/go/bin/gosec ./...
-
-  security_govuln:
-    name: Govulncheck (Dependency Vulnerabilities) - main only
-    runs-on: ubuntu-latest
-    needs: security_gosec
-    if: github.ref == 'refs/heads/main'
-    continue-on-error: true
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v4
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
         with:
-          go-version: '1.24'
-
-      - name: Install govulncheck
-        run: go install golang.org/x/vuln/cmd/govulncheck@latest
-
-      - name: Run govulncheck
-        run: $HOME/go/bin/govulncheck ./...
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/sadeeddiwan/go-app:${{ github.sha }}
+            ghcr.io/sadeeddiwan/go-app:latest
