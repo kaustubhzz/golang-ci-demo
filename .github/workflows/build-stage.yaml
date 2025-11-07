@@ -94,8 +94,6 @@ jobs:
           fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }} # remove if repo is public
 
-      - name: Security Scan
-
 # Run only when code is pushed to main (i.e. after a merge)
   govuln:
     name: Govulncheck (dependency vulnerability scanner)
