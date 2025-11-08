@@ -41,7 +41,8 @@ jobs:
         run: |
           go test ./... -v -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out
-
+          
+      # Verify to QLTY
       - name: Upload coverage and metrics to QLTY
         uses: qltyhq/qlty-action@v1
         with:
