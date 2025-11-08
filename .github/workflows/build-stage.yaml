@@ -1,5 +1,5 @@
-name: Deploy Docker image
-#Adding docker
+name: CI Pipeline — Build, Lint, Test, Secure, Add Docker and Deploy
+
 on:
   push:
     branches: [ main, develop ]
@@ -42,53 +42,29 @@ jobs:
           go test ./... -v -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out
 
-      - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage and metrics to QLTY
+        uses: qltyhq/qlty-action@v1
         with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: coverage.out
-          fail_ci_if_error: true
+          token: ${{ secrets.QLTY_TOKEN }}
+          coverage-file: coverage.out
+          fail-ci-on-error: true
+
+      # Upload coverage file to GitHub as artifact for manual viewing
+      - name: Upload coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.out
 
       - name: Install and Run GoSec
         run: |
           echo "Installing GoSec..."
           go install github.com/securego/gosec/v2/cmd/gosec@latest
           echo "Running GoSec..."
-          $HOME/go/bin/gosec ./... || true
+          $HOME/go/bin/gosec ./...
         continue-on-error: true
 
       - name: Install and Run Govulncheck
         run: |
           echo "Installing Govulncheck..."
-          go install golang.org/x/vuln/cmd/govulncheck@latest
-          echo "Running Govulncheck..."
-          $HOME/go/bin/govulncheck ./... || true
-        continue-on-error: true
-
-      - name: Build Go binary
-        run: |
-          mkdir -p ./bin
-          go build -v -o ./bin/app ./cmd/
-
-      - name: Upload binary artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: go-binary
-          path: ./bin/app
-
-      - name: Login to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: kaustubhzz
-          password: ${{ secrets.GHCR_PAT }}
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          tags: |
-            ghcr.io/sadeeddiwan/go-app:${{ github.sha }}
-            ghcr.io/sadeeddiwan/go-app:latest
