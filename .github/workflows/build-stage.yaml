@@ -41,14 +41,35 @@ jobs:
         run: |
           go test ./... -v -covermode=atomic -coverprofile=coverage.out
           go tool cover -func=coverage.out
-          
-      # Verify to QLTY
-      - name: Upload coverage and metrics to QLTY
-        uses: qltyhq/qlty-action@v1
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
         with:
-          token: ${{ secrets.QLTY_TOKEN }}
-          coverage-file: coverage.out
-          fail-ci-on-error: true
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: true
+
+# upload to QLTY (won't stop the pipeline if QLTY is unreachable)
+      - name: Try upload coverage to QLTY (non-blocking)
+        env:
+          QLTY_TOKEN: ${{ secrets.QLTY_TOKEN }}
+        run: |
+          if [ ! -f coverage.out ]; then
+            echo "coverage.out not found"
+            exit 1
+          fi
+          echo "Attempting QLTY upload (non-blocking)..."
+          # Verbose output suppressed; non-blocking to avoid failing entire job if QLTY is unreachable.
+          curl -s -o /tmp/qlty_resp.txt -w "%{http_code}" \
+            -H "Authorization: Bearer $QLTY_TOKEN" \
+            -F "coverage=@coverage.out" \
+            https://api.qlty.io/v1/coverage/upload || true
+          status=$(tail -n1 /tmp/qlty_resp.txt || echo "")
+          if [ -z "$status" ]; then
+            echo "QLTY not reachable (DNS/network). Continuing pipeline."
+          else
+            echo "QLTY response:" && cat /tmp/qlty_resp.txt
+          fi
 
       # Upload coverage file to GitHub as artifact for manual viewing
       - name: Upload coverage artifact
@@ -69,3 +90,53 @@ jobs:
       - name: Install and Run Govulncheck
         run: |
           echo "Installing Govulncheck..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "Running Govulncheck..."
+          $HOME/go/bin/govulncheck ./...
+        continue-on-error: true
+
+      - name: Build Go binary
+        run: |
+          mkdir -p ./bin
+          go build -v -o ./bin/app ./cmd/
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binary
+          path: ./bin/app
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: kaustubhzz
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/kaustubhzz/go-app:${{ github.sha }}
+            ghcr.io/kaustubhzz/go-app:latest
+
+      # Snyk integration for code and container scanning
+      - name: Set up Node.js (for Snyk)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Authenticate Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+
+      - name: Scan Go Project with Snyk
+        run: snyk test --all-projects --severity-threshold=medium
+
+      - name: Scan Docker Image with Snyk
+        run: snyk container test ghcr.io/kaustubhzz/go-app:latest --severity-threshold=medium
