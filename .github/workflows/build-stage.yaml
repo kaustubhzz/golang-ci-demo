@@ -43,12 +43,23 @@ jobs:
           go tool cover -func=coverage.out
           
       # Verify to QLTY
-      - name: Upload coverage and metrics to QLTY
-        uses: qltyhq/qlty-action@v1
-        with:
-          token: ${{ secrets.QLTY_TOKEN }}
-          coverage-file: coverage.out
-          fail-ci-on-error: true
+      - name: Debug network and upload coverage to QLTY
+        env:
+          QLTY_TOKEN: ${{ secrets.QLTY_TOKEN }}
+        run: |
+          echo "=== Check basic network ==="
+          curl -I -sS https://qlty.io || echo "qlty.io not reachable (curl exit:$?)"
+          echo "=== DNS lookup (fallback) ==="
+          getent hosts api.qlty.io || echo "getent hosts failed (no DNS record)"
+          echo "=== Try verbose curl to endpoint ==="
+          curl -v -X POST \
+            -H "Authorization: Bearer $QLTY_TOKEN" \
+            -F "coverage=@coverage.out" \
+            https://api.qlty.io/v1/coverage/upload || {
+              echo "QLTY upload failed — see above verbose curl output"
+              exit 1
+            }
+          echo "QLTY upload done!"
 
       # Upload coverage file to GitHub as artifact for manual viewing
       - name: Upload coverage artifact
