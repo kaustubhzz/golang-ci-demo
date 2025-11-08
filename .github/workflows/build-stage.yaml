@@ -43,12 +43,20 @@ jobs:
           go tool cover -func=coverage.out
           
       # Verify to QLTY
-      - name: Upload coverage and metrics to QLTY
-        uses: qltyhq/qlty-action@v1
-        with:
-          token: ${{ secrets.QLTY_TOKEN }}
-          coverage-file: coverage.out
-          fail-ci-on-error: true
+      - name: Upload coverage to QLTY
+        env:
+          QLTY_TOKEN: ${{ secrets.QLTY_TOKEN }}
+        run: |
+          if [ ! -f coverage.out ]; then
+            echo "coverage.out not found"
+            exit 1
+          fi
+          echo "Uploading coverage.out to QLTY..."
+          curl -X POST \
+            -H "Authorization: Bearer $QLTY_TOKEN" \
+            -F "coverage=@coverage.out" \
+            https://api.qlty.io/v1/coverage/upload || exit 1
+          echo "QLTY upload done!"
 
       # Upload coverage file to GitHub as artifact for manual viewing
       - name: Upload coverage artifact
@@ -69,3 +77,53 @@ jobs:
       - name: Install and Run Govulncheck
         run: |
           echo "Installing Govulncheck..."
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          echo "Running Govulncheck..."
+          $HOME/go/bin/govulncheck ./...
+        continue-on-error: true
+
+      - name: Build Go binary
+        run: |
+          mkdir -p ./bin
+          go build -v -o ./bin/app ./cmd/
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-binary
+          path: ./bin/app
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: kaustuhzz
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/kaustuhzz/go-app:${{ github.sha }}
+            ghcr.io/kaustuhzz/go-app:latest
+
+      # Snyk integration for code and container scanning
+      - name: Set up Node.js (for Snyk)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Snyk CLI
+        run: npm install -g snyk
+
+      - name: Authenticate Snyk
+        run: snyk auth ${{ secrets.SNYK_TOKEN }}
+
+      - name: Scan Go Project with Snyk
+        run: snyk test --all-projects --severity-threshold=medium
+
+      - name: Scan Docker Image with Snyk
+        run: snyk container test ghcr.io/kaustuhzz/go-app:latest --severity-threshold=medium
